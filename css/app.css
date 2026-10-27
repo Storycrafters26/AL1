@@ -146,3 +146,8 @@ legend { font-weight: 700; padding: 0 6px; }
 @media (max-width: 420px) {
   .summary { grid-template-columns: 1fr 1fr; }
 }
+
+/* Corregir datos desde la liquidación y los comprobantes */
+details.fix { margin: 12px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+details.fix summary { font-weight: 600; cursor: pointer; }
+details.fix .expenses { margin: 8px 0 12px; }

@@ -67,8 +67,10 @@ const routes = [
   [/^\/viaje\/nuevo$/, () => tripForm(null)],
   [/^\/viaje\/([^/]+)$/, (id) => tripView(id)],
   [/^\/viaje\/([^/]+)\/editar$/, (id) => tripForm(id)],
+  [/^\/viaje\/([^/]+)\/editar\/desde\/(liquidacion|anexo)$/, (id, from) => tripForm(id, from)],
   [/^\/viaje\/([^/]+)\/gasto$/, (id) => expenseForm(id, null)],
   [/^\/gasto\/([^/]+)$/, (id) => expenseForm(null, id)],
+  [/^\/gasto\/([^/]+)\/desde\/(liquidacion|anexo)$/, (id, from) => expenseForm(null, id, from)],
   [/^\/viaje\/([^/]+)\/liquidacion$/, (id) => liquidationView(id)],
   [/^\/viaje\/([^/]+)\/anexo$/, (id) => annexView(id)],
   [/^\/ajustes$/, settingsView],
@@ -127,7 +129,7 @@ async function home() {
 
 // ---------- viaje ----------
 
-async function tripForm(id) {
+async function tripForm(id, from = null) {
   const trip = id ? await db.get("trips", id) : null;
   const t = trip || {
     employeeName: await getSetting("employeeName", ""),
@@ -163,7 +165,7 @@ async function tripForm(id) {
       </fieldset>
       <div class="actions">
         <button class="btn primary" type="submit">Guardar</button>
-        <a class="btn" href="${trip ? "#/viaje/" + trip.id : "#/"}">Cancelar</a>
+        <a class="btn" href="${trip ? `#/viaje/${trip.id}${from ? "/" + from : ""}` : "#/"}">Cancelar</a>
         ${trip ? `<button class="btn danger" type="button" id="del">Eliminar viaje</button>` : ""}
       </div>
     </form>`;
@@ -181,7 +183,7 @@ async function tripForm(id) {
     };
     await db.put("trips", saved);
     if (data.employeeName) await setSetting("employeeName", data.employeeName);
-    location.hash = `#/viaje/${saved.id}`;
+    location.hash = `#/viaje/${saved.id}${from ? "/" + from : ""}`;
   });
   $("#del")?.addEventListener("click", async () => {
     const list = await tripExpenses(trip.id);
@@ -290,11 +292,13 @@ async function exportTrip(trip, expenses) {
 
 // ---------- gasto ----------
 
-async function expenseForm(tripId, expenseId) {
+// `from` devuelve a la liquidación o a los comprobantes después de corregir el gasto.
+async function expenseForm(tripId, expenseId, from = null) {
   const existing = expenseId ? await db.get("expenses", expenseId) : null;
   tripId = tripId || existing?.tripId;
   const trip = await db.get("trips", tripId);
   if (!trip) return (location.hash = "#/");
+  const back = `#/viaje/${trip.id}${from ? "/" + from : ""}`;
 
   const e = existing || {
     date: today() < trip.startDate ? trip.startDate : today(),
@@ -375,7 +379,7 @@ async function expenseForm(tripId, expenseId) {
 
       <div class="actions">
         <button class="btn primary big" type="submit">Registrar</button>
-        <a class="btn" href="#/viaje/${trip.id}">Cancelar</a>
+        <a class="btn" href="${back}">Cancelar</a>
         ${existing ? `<button class="btn danger" type="button" id="del">Eliminar</button>` : ""}
       </div>
     </form>`;
@@ -600,14 +604,14 @@ async function expenseForm(tripId, expenseId) {
     if (!local && fd.bch && rate2) await saveBCHRate(fd.date, rate2);
     await db.put("expenses", saved);
     toast("Gasto registrado.");
-    location.hash = `#/viaje/${trip.id}`;
+    location.hash = back;
   });
 
   $("#del")?.addEventListener("click", async () => {
     if (!confirm("¿Eliminar este gasto?")) return;
     if (existing.blobId) await db.del("blobs", existing.blobId);
     await db.del("expenses", existing.id);
-    location.hash = `#/viaje/${trip.id}`;
+    location.hash = back;
   });
 }
 
@@ -631,6 +635,26 @@ function fitPreview(sheet) {
   box.style.height = sheet.offsetHeight * scale + "px";
 }
 
+// Lista para corregir los datos que salen en el documento, sin salir de esta página.
+function fixList(trip, expenses, from) {
+  const items = expenses
+    .map((e, i) => `
+        <li><a href="#/gasto/${e.id}/desde/${from}">
+          <span class="n">${i + 1}</span>
+          <span class="main"><strong>${esc(e.merchant || "Sin proveedor")}</strong>
+            <span class="muted">${rowDate(e.date)} · ${esc(e.descEs || "")}</span></span>
+          <span class="amt">${e.hnl == null ? "—" : "L " + money(e.hnl)}<span class="muted">Editar</span></span>
+        </a></li>`)
+    .join("");
+  return `
+    <details class="fix">
+      <summary>Corregir datos</summary>
+      <p class="muted small">Toca un gasto para corregirlo. Al guardar regresas aquí con el documento actualizado.</p>
+      <ol class="expenses">${items}</ol>
+      <a class="btn small" href="#/viaje/${trip.id}/editar/desde/${from}">Datos del viaje (fechas, presupuesto, solicitud, empleado)</a>
+    </details>`;
+}
+
 async function liquidationView(id) {
   const trip = await db.get("trips", id);
   const expenses = (await tripExpenses(id)).filter((e) => e.hnl != null);
@@ -648,6 +672,7 @@ async function liquidationView(id) {
       <button class="btn primary" id="pdf">Guardar PDF</button>
       <button class="btn" id="xlsx" ${template ? "" : "disabled"}>Guardar Excel (formato original)</button>
     </div>
+    ${fixList(trip, await tripExpenses(id), "liquidacion")}
     <div class="paper-box"><div class="paper ${o}" id="sheet">${liquidationHTML(trip, expenses, logo ? blobURL(logo.blob) : "")}</div></div>`;
 
   const sheet = $("#sheet");
@@ -697,6 +722,7 @@ async function annexView(id) {
     <div class="row-between"><h1>Comprobantes (una hoja por factura)</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
     ${html}
     <div class="actions"><button class="btn primary" id="pdf">Guardar PDF</button></div>
+    ${fixList(trip, expenses, "anexo")}
     <div class="paper-box"><div class="paper ${o}" id="sheet">${annexHTML(trip, expenses, urls)}</div></div>`;
 
   const sheet = $("#sheet");
