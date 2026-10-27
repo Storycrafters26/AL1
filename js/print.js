@@ -130,8 +130,16 @@ export function liquidationHTML(trip, expenses, logoURL) {
   return `<table class="liq"><colgroup>${colgroup}</colgroup>${grid(rows)}</table>`;
 }
 
+// Tasa usada, en texto. Un gasto en lempiras no lleva conversión.
+export function rateText(e) {
+  if (e.currency === "HNL") return "No aplica: gasto en lempiras";
+  const toUSD = e.currency === "USD" ? "" : `1 ${esc(e.currency)} = ${Number(e.rateToUSD).toFixed(6)} USD · `;
+  return `${toUSD}1 USD = L ${Number(e.rateHNL).toFixed(4)}${e.rateHNLSource ? ` (${esc(e.rateHNLSource)})` : ""}`;
+}
+
+// Documento de comprobantes: una hoja por factura, con la imagen y sus datos.
 export function annexHTML(trip, expenses, imageURLs) {
-  const cards = expenses
+  const pages = expenses
     .map((e, i) => {
       const img = imageURLs[e.id];
       const media = img
@@ -140,29 +148,30 @@ export function annexHTML(trip, expenses, imageURLs) {
           : `<img src="${img.url}" alt="">`
         : `<div class="noimg">${e.noReceipt ? "Gasto sin comprobante" : "Sin imagen"}</div>`;
       return `
-      <section class="annex-card">
-        <div class="annex-img">${media}</div>
-        <div class="annex-data">
-          <h3>${i + 1}. ${esc(e.merchant || "")}</h3>
-          <dl>
+      <section class="annex-page">
+        <header>
+          <strong>COMPROBANTES DE GASTOS</strong>
+          <span>${esc(tripLine(trip))}</span>
+          <span>Comprobante ${i + 1} de ${expenses.length}</span>
+        </header>
+        <div class="annex-body">
+          <div class="annex-img">${media}</div>
+          <dl class="annex-data">
             <dt>Fecha</dt><dd>${rowDate(e.date)}</dd>
+            <dt>Proveedor</dt><dd>${esc(e.merchant || "")}</dd>
+            <dt># de factura</dt><dd>${esc(e.invoice || "—")}</dd>
             <dt>Lugar</dt><dd>${esc([e.city, e.country].filter(Boolean).join(", "))}</dd>
-            <dt>Factura</dt><dd>${esc(e.invoice || "—")}</dd>
-            <dt>Concepto</dt><dd>${esc(e.descEs || "")}<br><em>${esc(e.descEn || "")}</em></dd>
-            <dt>Monto original</dt><dd><strong>${money(e.amount)} ${esc(e.currency)}</strong></dd>
-            <dt>Tasa a USD</dt><dd>${Number(e.rateToUSD).toFixed(6)} · ${money(e.usd)} USD</dd>
-            <dt>Tasa USD→HNL</dt><dd>${Number(e.rateHNL).toFixed(4)} (${esc(e.rateHNLSource || "")})</dd>
-            <dt>Monto en lempiras</dt><dd><strong>L ${money(e.hnl)}</strong></dd>
+            <dt>Descripción</dt><dd>${esc(descriptionCell(e))}</dd>
+            <dt>Monto original</dt><dd>${money(e.amount)} ${esc(e.currency)}</dd>
+            <dt>Tasa de cambio</dt><dd>${rateText(e)}</dd>
+            <dt>Valor en lempiras</dt><dd class="hnl">L ${money(e.hnl)}</dd>
+            ${e.noReceipt ? `<dt>Nota</dt><dd>${esc(e.noReceiptNote || "")}</dd>` : ""}
           </dl>
-          ${e.noReceipt ? `<p class="note">Nota: ${esc(e.noReceiptNote || "")}</p>` : ""}
         </div>
       </section>`;
     })
     .join("");
-  return `<div class="annex">
-    <header><h2>ANEXO DE COMPROBANTES</h2><p>${esc(tripLine(trip))}</p></header>
-    ${cards}
-  </div>`;
+  return `<div class="annex">${pages || `<p>No hay gastos registrados.</p>`}</div>`;
 }
 
 // Genera un PDF a partir de un elemento, en la orientación elegida, tamaño carta.
@@ -202,14 +211,11 @@ export async function elementToPDF(el, orientation, { paginate = false } = {}) {
       }
       continue;
     }
-    if (!first && y + h > pageH - margin) {
-      pdf.addPage();
-      y = margin;
-    }
+    // Una hoja por bloque, ajustada a la página.
+    if (!first) pdf.addPage();
     const drawH = Math.min(h, usableH);
     const drawW = drawH < h ? (canvas.width / canvas.height) * drawH : usableW;
-    pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", margin, y, drawW, drawH);
-    y += drawH + 0.15;
+    pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", margin + (usableW - drawW) / 2, margin, drawW, drawH);
     first = false;
   }
   return pdf.output("blob");

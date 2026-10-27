@@ -33,20 +33,28 @@
 .liq .td.desc { font-size: calc(11pt * var(--k)); }
 .liq .acct { display: flex; justify-content: space-between; gap: 4px; }
 
-.annex header { text-align: center; margin-bottom: 18px; }
-.annex h2 { margin: 0; font-size: 18px; }
-.annex header p { margin: 4px 0 0; font-weight: 600; }
-.annex-card {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
-  border: 1px solid #000; padding: 14px; margin-bottom: 14px; break-inside: avoid;
+.paper:has(.annex) { padding: 0; background: transparent; box-shadow: none; }
+.annex-page {
+  background: #fff; display: flex; flex-direction: column; gap: 14px;
+  padding: 30px; margin-bottom: 16px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
 }
-.paper.portrait .annex-card { grid-template-columns: 1fr; }
-.annex-img { display: flex; justify-content: center; align-items: flex-start; }
-.annex-img img { max-width: 100%; max-height: 520px; object-fit: contain; }
-.paper.portrait .annex-img img { max-height: 560px; }
+.paper.landscape .annex-page { height: 816px; }
+.paper.portrait .annex-page { height: 1056px; }
+.annex-page header {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  border-bottom: 2px solid #000; padding-bottom: 8px; font-size: 13px;
+}
+.annex-page header strong { font-size: 16px; }
+.annex-body { flex: 1; min-height: 0; display: grid; gap: 20px; }
+.paper.landscape .annex-body { grid-template-columns: 1.4fr 1fr; }
+.paper.portrait .annex-body { grid-template-rows: 1fr auto; }
+.annex-img { min-height: 0; display: flex; justify-content: center; align-items: center; border: 1px solid #000; padding: 8px; }
+.annex-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .annex .noimg { padding: 40px 20px; border: 1px dashed #777; color: #444; text-align: center; width: 100%; }
-.annex h3 { margin: 0 0 8px; font-size: 16px; }
-.annex dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
-.annex dt { font-weight: 700; }
-.annex dd { margin: 0; }
-.annex .note { font-size: 13px; }
+.annex-data {
+  display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; margin: 0;
+  font-size: 15px; align-content: start; border: 1px solid #000; padding: 14px;
+}
+.annex-data dt { font-weight: 700; }
+.annex-data dd { margin: 0; }
+.annex-data .hnl { font-size: 20px; font-weight: 700; }

@@ -1,6 +1,6 @@
 // Guarda la app en el teléfono para que abra sin internet. Las tasas y Claude sí necesitan conexión.
 
-const VERSION = "al1-v2";
+const VERSION = "al1-v3";
 const SHELL = [
   "./",
   "index.html",

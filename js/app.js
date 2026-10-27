@@ -67,8 +67,10 @@ const routes = [
   [/^\/viaje\/nuevo$/, () => tripForm(null)],
   [/^\/viaje\/([^/]+)$/, (id) => tripView(id)],
   [/^\/viaje\/([^/]+)\/editar$/, (id) => tripForm(id)],
+  [/^\/viaje\/([^/]+)\/editar\/desde\/(liquidacion|anexo)$/, (id, from) => tripForm(id, from)],
   [/^\/viaje\/([^/]+)\/gasto$/, (id) => expenseForm(id, null)],
   [/^\/gasto\/([^/]+)$/, (id) => expenseForm(null, id)],
+  [/^\/gasto\/([^/]+)\/desde\/(liquidacion|anexo)$/, (id, from) => expenseForm(null, id, from)],
   [/^\/viaje\/([^/]+)\/liquidacion$/, (id) => liquidationView(id)],
   [/^\/viaje\/([^/]+)\/anexo$/, (id) => annexView(id)],
   [/^\/ajustes$/, settingsView],
@@ -127,7 +129,7 @@ async function home() {
 
 // ---------- viaje ----------
 
-async function tripForm(id) {
+async function tripForm(id, from = null) {
   const trip = id ? await db.get("trips", id) : null;
   const t = trip || {
     employeeName: await getSetting("employeeName", ""),
@@ -163,7 +165,7 @@ async function tripForm(id) {
       </fieldset>
       <div class="actions">
         <button class="btn primary" type="submit">Guardar</button>
-        <a class="btn" href="${trip ? "#/viaje/" + trip.id : "#/"}">Cancelar</a>
+        <a class="btn" href="${trip ? `#/viaje/${trip.id}${from ? "/" + from : ""}` : "#/"}">Cancelar</a>
         ${trip ? `<button class="btn danger" type="button" id="del">Eliminar viaje</button>` : ""}
       </div>
     </form>`;
@@ -181,7 +183,7 @@ async function tripForm(id) {
     };
     await db.put("trips", saved);
     if (data.employeeName) await setSetting("employeeName", data.employeeName);
-    location.hash = `#/viaje/${saved.id}`;
+    location.hash = `#/viaje/${saved.id}${from ? "/" + from : ""}`;
   });
   $("#del")?.addEventListener("click", async () => {
     const list = await tripExpenses(trip.id);
@@ -200,7 +202,7 @@ async function tripView(id) {
   if (!trip) return (location.hash = "#/");
   const expenses = await tripExpenses(id);
   const { spent, budget, left, pct } = totals(trip, expenses);
-  const pending = expenses.filter((e) => !e.rateHNL || !e.rateToUSD);
+  const pending = expenses.filter((e) => e.currency !== "HNL" && (!e.rateHNL || !e.rateToUSD));
   const closed = trip.status === "closed";
 
   app.innerHTML = `
@@ -232,7 +234,7 @@ async function tripView(id) {
     <h2>Documentos</h2>
     <div class="actions wrap">
       <a class="btn" href="#/viaje/${id}/liquidacion">Liquidación</a>
-      <a class="btn" href="#/viaje/${id}/anexo">Anexo de comprobantes</a>
+      <a class="btn" href="#/viaje/${id}/anexo">Comprobantes (una hoja por factura)</a>
       <button class="btn" id="zip">Guardar carpeta del viaje</button>
       <button class="btn ${closed ? "" : "danger"}" id="close">${closed ? "Reabrir viaje" : "Cerrar viaje"}</button>
     </div>`;
@@ -290,11 +292,13 @@ async function exportTrip(trip, expenses) {
 
 // ---------- gasto ----------
 
-async function expenseForm(tripId, expenseId) {
+// `from` devuelve a la liquidación o a los comprobantes después de corregir el gasto.
+async function expenseForm(tripId, expenseId, from = null) {
   const existing = expenseId ? await db.get("expenses", expenseId) : null;
   tripId = tripId || existing?.tripId;
   const trip = await db.get("trips", tripId);
   if (!trip) return (location.hash = "#/");
+  const back = `#/viaje/${trip.id}${from ? "/" + from : ""}`;
 
   const e = existing || {
     date: today() < trip.startDate ? trip.startDate : today(),
@@ -359,22 +363,23 @@ async function expenseForm(tripId, expenseId) {
       <label id="nrNote" ${e.noReceipt ? "" : "hidden"}>Nota del gasto sin comprobante<input name="noReceiptNote" value="${esc(e.noReceiptNote)}"></label>
 
       <fieldset class="conv"><legend>Conversión a lempiras</legend>
-        <div class="two">
+        <p id="isHNL" class="muted" hidden>Gasto en lempiras: va directo con su valor original, sin conversión.</p>
+        <div class="two" data-fx>
           <label><span id="lblUSD">Tasa a USD</span><input name="rateToUSD" inputmode="decimal" value="${esc(e.rateToUSD)}"></label>
           <label>Monto en USD<input name="usd" readonly value="${esc(e.usd)}"></label>
         </div>
         <div class="two">
-          <label>Tasa USD → HNL<input name="rateHNL" inputmode="decimal" value="${esc(e.rateHNL)}"></label>
+          <label data-fx>Tasa USD → HNL<input name="rateHNL" inputmode="decimal" value="${esc(e.rateHNL)}"></label>
           <label>Monto en lempiras<input name="hnl" readonly value="${esc(e.hnl)}" class="strong"></label>
         </div>
-        <p class="muted small" id="rateSrc">${esc(e.rateHNLSource || "")}</p>
-        <label class="check"><input type="checkbox" name="bch" ${e.rateHNLSource === "BCH" ? "checked" : ""}> Esta es la tasa oficial del BCH para esta fecha</label>
-        <button class="btn small" type="button" id="rates">Actualizar tasas</button>
+        <p class="muted small" id="rateSrc" data-fx>${esc(e.rateHNLSource || "")}</p>
+        <label class="check" data-fx><input type="checkbox" name="bch" ${e.rateHNLSource === "BCH" ? "checked" : ""}> Esta es la tasa oficial del BCH para esta fecha</label>
+        <button class="btn small" type="button" id="rates" data-fx>Actualizar tasas</button>
       </fieldset>
 
       <div class="actions">
         <button class="btn primary big" type="submit">Registrar</button>
-        <a class="btn" href="#/viaje/${trip.id}">Cancelar</a>
+        <a class="btn" href="${back}">Cancelar</a>
         ${existing ? `<button class="btn danger" type="button" id="del">Eliminar</button>` : ""}
       </div>
     </form>`;
@@ -394,8 +399,18 @@ async function expenseForm(tripId, expenseId) {
   }
   showPreview();
 
+  const isHNL = () => field("currency").value.trim().toUpperCase() === "HNL";
+
   function recalc() {
     const amount = Number(String(field("amount").value).replace(/,/g, ""));
+    const local = isHNL();
+    $("#isHNL").hidden = !local;
+    $$("[data-fx]").forEach((el) => (el.hidden = local));
+    if (local) {
+      field("usd").value = "";
+      field("hnl").value = amount ? amount.toFixed(2) : "";
+      return;
+    }
     const r1 = Number(field("rateToUSD").value);
     const r2 = Number(field("rateHNL").value);
     if (amount && r1 && r2) {
@@ -413,6 +428,7 @@ async function expenseForm(tripId, expenseId) {
     const date = field("date").value;
     const cur = field("currency").value.toUpperCase();
     if (!date || cur.length !== 3) return;
+    if (cur === "HNL") return recalc();
     status.textContent = "Buscando tasas del " + rowDate(date) + "…";
     try {
       if (force || !dirty.rateToUSD) {
@@ -509,6 +525,7 @@ async function expenseForm(tripId, expenseId) {
     dirty.rateToUSD = false;
     loadRates();
   });
+  field("currency").addEventListener("input", recalc);
   $("#rates").addEventListener("click", () => loadRates(true));
 
   async function translate() {
@@ -538,8 +555,9 @@ async function expenseForm(tripId, expenseId) {
     const fd = Object.fromEntries(new FormData(form).entries());
     const amount = round2(String(fd.amount).replace(/,/g, ""));
     if (!amount) return toast("Escribe el monto del gasto.", "error");
-    const rate1 = Number(fd.rateToUSD) || null;
-    const rate2 = Number(fd.rateHNL) || null;
+    const local = fd.currency.trim().toUpperCase() === "HNL";
+    const rate1 = local ? null : Number(fd.rateToUSD) || null;
+    const rate2 = local ? null : Number(fd.rateHNL) || null;
 
     if (fd.date < trip.startDate || (trip.endDate && fd.date > trip.endDate)) {
       if (!confirm(`La fecha ${rowDate(fd.date)} está fuera del viaje. ¿Registrar de todos modos?`)) return;
@@ -569,10 +587,11 @@ async function expenseForm(tripId, expenseId) {
       noReceipt: !!fd.noReceipt,
       noReceiptNote: (fd.noReceiptNote || "").trim(),
       rateToUSD: rate1,
-      rateToUSDSource: sources.usd,
+      rateToUSDSource: local ? "No aplica" : sources.usd,
       rateHNL: rate2,
-      rateHNLSource: fd.bch ? "BCH" : sources.hnl,
-      ...(rate1 && rate2 ? convert(amount, rate1, rate2) : { usd: null, hnl: null }),
+      rateHNLSource: local ? "No aplica" : fd.bch ? "BCH" : sources.hnl,
+      // Un gasto en lempiras va directo con su valor original.
+      ...(local ? { usd: null, hnl: amount } : rate1 && rate2 ? convert(amount, rate1, rate2) : { usd: null, hnl: null }),
     };
     if (blob && blobChanged) {
       const blobId = saved.blobId || uid();
@@ -582,17 +601,17 @@ async function expenseForm(tripId, expenseId) {
     }
     const seq = others.filter((x) => x.date <= saved.date).length + 1;
     if (saved.blobId) saved.fileName = receiptFileName(saved, seq, saved.mime);
-    if (fd.bch && rate2) await saveBCHRate(fd.date, rate2);
+    if (!local && fd.bch && rate2) await saveBCHRate(fd.date, rate2);
     await db.put("expenses", saved);
     toast("Gasto registrado.");
-    location.hash = `#/viaje/${trip.id}`;
+    location.hash = back;
   });
 
   $("#del")?.addEventListener("click", async () => {
     if (!confirm("¿Eliminar este gasto?")) return;
     if (existing.blobId) await db.del("blobs", existing.blobId);
     await db.del("expenses", existing.id);
-    location.hash = `#/viaje/${trip.id}`;
+    location.hash = back;
   });
 }
 
@@ -616,6 +635,26 @@ function fitPreview(sheet) {
   box.style.height = sheet.offsetHeight * scale + "px";
 }
 
+// Lista para corregir los datos que salen en el documento, sin salir de esta página.
+function fixList(trip, expenses, from) {
+  const items = expenses
+    .map((e, i) => `
+        <li><a href="#/gasto/${e.id}/desde/${from}">
+          <span class="n">${i + 1}</span>
+          <span class="main"><strong>${esc(e.merchant || "Sin proveedor")}</strong>
+            <span class="muted">${rowDate(e.date)} · ${esc(e.descEs || "")}</span></span>
+          <span class="amt">${e.hnl == null ? "—" : "L " + money(e.hnl)}<span class="muted">Editar</span></span>
+        </a></li>`)
+    .join("");
+  return `
+    <details class="fix">
+      <summary>Corregir datos</summary>
+      <p class="muted small">Toca un gasto para corregirlo. Al guardar regresas aquí con el documento actualizado.</p>
+      <ol class="expenses">${items}</ol>
+      <a class="btn small" href="#/viaje/${trip.id}/editar/desde/${from}">Datos del viaje (fechas, presupuesto, solicitud, empleado)</a>
+    </details>`;
+}
+
 async function liquidationView(id) {
   const trip = await db.get("trips", id);
   const expenses = (await tripExpenses(id)).filter((e) => e.hnl != null);
@@ -633,6 +672,7 @@ async function liquidationView(id) {
       <button class="btn primary" id="pdf">Guardar PDF</button>
       <button class="btn" id="xlsx" ${template ? "" : "disabled"}>Guardar Excel (formato original)</button>
     </div>
+    ${fixList(trip, await tripExpenses(id), "liquidacion")}
     <div class="paper-box"><div class="paper ${o}" id="sheet">${liquidationHTML(trip, expenses, logo ? blobURL(logo.blob) : "")}</div></div>`;
 
   const sheet = $("#sheet");
@@ -679,9 +719,10 @@ async function annexView(id) {
   }
   const { o, html } = await orientationBar("annexOrientation");
   app.innerHTML = `
-    <div class="row-between"><h1>Anexo de comprobantes</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
+    <div class="row-between"><h1>Comprobantes (una hoja por factura)</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
     ${html}
     <div class="actions"><button class="btn primary" id="pdf">Guardar PDF</button></div>
+    ${fixList(trip, expenses, "anexo")}
     <div class="paper-box"><div class="paper ${o}" id="sheet">${annexHTML(trip, expenses, urls)}</div></div>`;
 
   const sheet = $("#sheet");
@@ -700,7 +741,7 @@ async function annexView(id) {
       try {
         const orientation = $("input[name=o]:checked").value;
         const pdf = await elementToPDF(sheet.querySelector(".annex"), orientation, { paginate: true });
-        await shareOrDownload(pdf, `Anexo ${trip.name}.pdf`.replace(/[\\/:*?"<>|]/g, "-"));
+        await shareOrDownload(pdf, `Comprobantes ${trip.name}.pdf`.replace(/[\\/:*?"<>|]/g, "-"));
       } finally {
         fit();
       }
