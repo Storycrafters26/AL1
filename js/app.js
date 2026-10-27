@@ -200,7 +200,7 @@ async function tripView(id) {
   if (!trip) return (location.hash = "#/");
   const expenses = await tripExpenses(id);
   const { spent, budget, left, pct } = totals(trip, expenses);
-  const pending = expenses.filter((e) => !e.rateHNL || !e.rateToUSD);
+  const pending = expenses.filter((e) => e.currency !== "HNL" && (!e.rateHNL || !e.rateToUSD));
   const closed = trip.status === "closed";
 
   app.innerHTML = `
@@ -232,7 +232,7 @@ async function tripView(id) {
     <h2>Documentos</h2>
     <div class="actions wrap">
       <a class="btn" href="#/viaje/${id}/liquidacion">Liquidación</a>
-      <a class="btn" href="#/viaje/${id}/anexo">Anexo de comprobantes</a>
+      <a class="btn" href="#/viaje/${id}/anexo">Comprobantes (una hoja por factura)</a>
       <button class="btn" id="zip">Guardar carpeta del viaje</button>
       <button class="btn ${closed ? "" : "danger"}" id="close">${closed ? "Reabrir viaje" : "Cerrar viaje"}</button>
     </div>`;
@@ -359,17 +359,18 @@ async function expenseForm(tripId, expenseId) {
       <label id="nrNote" ${e.noReceipt ? "" : "hidden"}>Nota del gasto sin comprobante<input name="noReceiptNote" value="${esc(e.noReceiptNote)}"></label>
 
       <fieldset class="conv"><legend>Conversión a lempiras</legend>
-        <div class="two">
+        <p id="isHNL" class="muted" hidden>Gasto en lempiras: va directo con su valor original, sin conversión.</p>
+        <div class="two" data-fx>
           <label><span id="lblUSD">Tasa a USD</span><input name="rateToUSD" inputmode="decimal" value="${esc(e.rateToUSD)}"></label>
           <label>Monto en USD<input name="usd" readonly value="${esc(e.usd)}"></label>
         </div>
         <div class="two">
-          <label>Tasa USD → HNL<input name="rateHNL" inputmode="decimal" value="${esc(e.rateHNL)}"></label>
+          <label data-fx>Tasa USD → HNL<input name="rateHNL" inputmode="decimal" value="${esc(e.rateHNL)}"></label>
           <label>Monto en lempiras<input name="hnl" readonly value="${esc(e.hnl)}" class="strong"></label>
         </div>
-        <p class="muted small" id="rateSrc">${esc(e.rateHNLSource || "")}</p>
-        <label class="check"><input type="checkbox" name="bch" ${e.rateHNLSource === "BCH" ? "checked" : ""}> Esta es la tasa oficial del BCH para esta fecha</label>
-        <button class="btn small" type="button" id="rates">Actualizar tasas</button>
+        <p class="muted small" id="rateSrc" data-fx>${esc(e.rateHNLSource || "")}</p>
+        <label class="check" data-fx><input type="checkbox" name="bch" ${e.rateHNLSource === "BCH" ? "checked" : ""}> Esta es la tasa oficial del BCH para esta fecha</label>
+        <button class="btn small" type="button" id="rates" data-fx>Actualizar tasas</button>
       </fieldset>
 
       <div class="actions">
@@ -394,8 +395,18 @@ async function expenseForm(tripId, expenseId) {
   }
   showPreview();
 
+  const isHNL = () => field("currency").value.trim().toUpperCase() === "HNL";
+
   function recalc() {
     const amount = Number(String(field("amount").value).replace(/,/g, ""));
+    const local = isHNL();
+    $("#isHNL").hidden = !local;
+    $$("[data-fx]").forEach((el) => (el.hidden = local));
+    if (local) {
+      field("usd").value = "";
+      field("hnl").value = amount ? amount.toFixed(2) : "";
+      return;
+    }
     const r1 = Number(field("rateToUSD").value);
     const r2 = Number(field("rateHNL").value);
     if (amount && r1 && r2) {
@@ -413,6 +424,7 @@ async function expenseForm(tripId, expenseId) {
     const date = field("date").value;
     const cur = field("currency").value.toUpperCase();
     if (!date || cur.length !== 3) return;
+    if (cur === "HNL") return recalc();
     status.textContent = "Buscando tasas del " + rowDate(date) + "…";
     try {
       if (force || !dirty.rateToUSD) {
@@ -509,6 +521,7 @@ async function expenseForm(tripId, expenseId) {
     dirty.rateToUSD = false;
     loadRates();
   });
+  field("currency").addEventListener("input", recalc);
   $("#rates").addEventListener("click", () => loadRates(true));
 
   async function translate() {
@@ -538,8 +551,9 @@ async function expenseForm(tripId, expenseId) {
     const fd = Object.fromEntries(new FormData(form).entries());
     const amount = round2(String(fd.amount).replace(/,/g, ""));
     if (!amount) return toast("Escribe el monto del gasto.", "error");
-    const rate1 = Number(fd.rateToUSD) || null;
-    const rate2 = Number(fd.rateHNL) || null;
+    const local = fd.currency.trim().toUpperCase() === "HNL";
+    const rate1 = local ? null : Number(fd.rateToUSD) || null;
+    const rate2 = local ? null : Number(fd.rateHNL) || null;
 
     if (fd.date < trip.startDate || (trip.endDate && fd.date > trip.endDate)) {
       if (!confirm(`La fecha ${rowDate(fd.date)} está fuera del viaje. ¿Registrar de todos modos?`)) return;
@@ -569,10 +583,11 @@ async function expenseForm(tripId, expenseId) {
       noReceipt: !!fd.noReceipt,
       noReceiptNote: (fd.noReceiptNote || "").trim(),
       rateToUSD: rate1,
-      rateToUSDSource: sources.usd,
+      rateToUSDSource: local ? "No aplica" : sources.usd,
       rateHNL: rate2,
-      rateHNLSource: fd.bch ? "BCH" : sources.hnl,
-      ...(rate1 && rate2 ? convert(amount, rate1, rate2) : { usd: null, hnl: null }),
+      rateHNLSource: local ? "No aplica" : fd.bch ? "BCH" : sources.hnl,
+      // Un gasto en lempiras va directo con su valor original.
+      ...(local ? { usd: null, hnl: amount } : rate1 && rate2 ? convert(amount, rate1, rate2) : { usd: null, hnl: null }),
     };
     if (blob && blobChanged) {
       const blobId = saved.blobId || uid();
@@ -582,7 +597,7 @@ async function expenseForm(tripId, expenseId) {
     }
     const seq = others.filter((x) => x.date <= saved.date).length + 1;
     if (saved.blobId) saved.fileName = receiptFileName(saved, seq, saved.mime);
-    if (fd.bch && rate2) await saveBCHRate(fd.date, rate2);
+    if (!local && fd.bch && rate2) await saveBCHRate(fd.date, rate2);
     await db.put("expenses", saved);
     toast("Gasto registrado.");
     location.hash = `#/viaje/${trip.id}`;
@@ -679,7 +694,7 @@ async function annexView(id) {
   }
   const { o, html } = await orientationBar("annexOrientation");
   app.innerHTML = `
-    <div class="row-between"><h1>Anexo de comprobantes</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
+    <div class="row-between"><h1>Comprobantes (una hoja por factura)</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
     ${html}
     <div class="actions"><button class="btn primary" id="pdf">Guardar PDF</button></div>
     <div class="paper-box"><div class="paper ${o}" id="sheet">${annexHTML(trip, expenses, urls)}</div></div>`;
@@ -700,7 +715,7 @@ async function annexView(id) {
       try {
         const orientation = $("input[name=o]:checked").value;
         const pdf = await elementToPDF(sheet.querySelector(".annex"), orientation, { paginate: true });
-        await shareOrDownload(pdf, `Anexo ${trip.name}.pdf`.replace(/[\\/:*?"<>|]/g, "-"));
+        await shareOrDownload(pdf, `Comprobantes ${trip.name}.pdf`.replace(/[\\/:*?"<>|]/g, "-"));
       } finally {
         fit();
       }
