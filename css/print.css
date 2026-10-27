@@ -1,0 +1,52 @@
+/* Hoja de liquidación y anexo. Tamaño carta a 96 px por pulgada; --k escala el formato
+   de Excel (14.2 pulgadas de ancho) al ancho útil de la página. */
+
+.paper {
+  background: #fff;
+  color: #000;
+  padding: 30px;
+  font-family: Calibri, Carlito, "Helvetica Neue", Arial, sans-serif;
+}
+.paper.landscape { width: 1056px; min-height: 816px; --k: 0.73; }
+.paper.portrait { width: 816px; min-height: 1056px; --k: 0.555; }
+
+.liq { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: calc(12pt * var(--k)); }
+.liq td { padding: 0 calc(3pt * var(--k)); overflow: hidden; vertical-align: bottom; line-height: 1.15; }
+.liq .logo { display: block; margin-left: 15.6%; width: 59.9%; height: auto; }
+.liq .title { text-align: center; font-weight: 700; font-size: calc(16pt * var(--k)); }
+.liq .trip { text-align: center; font-weight: 700; font-size: calc(12pt * var(--k)); }
+.liq .section { font-weight: 700; font-size: calc(16pt * var(--k)); white-space: nowrap; }
+.liq .box { border: 1px solid #000; }
+.liq .top { vertical-align: top; padding-top: calc(2pt * var(--k)); }
+.liq .left { text-align: left; }
+.liq .center { text-align: center; }
+.liq .right { text-align: right; white-space: nowrap; }
+.liq .small { font-size: calc(11pt * var(--k)); }
+.liq .nowrap { white-space: nowrap; overflow: visible; }
+.liq .bold { font-weight: 700; }
+.liq .check { border: 1px solid #000; text-align: center; font-weight: 700; font-size: calc(11pt * var(--k)); }
+.liq .th {
+  border: 1px solid #000; border-bottom-width: 2px; text-align: center; vertical-align: middle;
+  font-weight: 700; font-size: calc(11pt * var(--k));
+}
+.liq .td { border: 1px solid #000; text-align: center; vertical-align: middle; }
+.liq .td.desc { font-size: calc(11pt * var(--k)); }
+.liq .acct { display: flex; justify-content: space-between; gap: 4px; }
+
+.annex header { text-align: center; margin-bottom: 18px; }
+.annex h2 { margin: 0; font-size: 18px; }
+.annex header p { margin: 4px 0 0; font-weight: 600; }
+.annex-card {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+  border: 1px solid #000; padding: 14px; margin-bottom: 14px; break-inside: avoid;
+}
+.paper.portrait .annex-card { grid-template-columns: 1fr; }
+.annex-img { display: flex; justify-content: center; align-items: flex-start; }
+.annex-img img { max-width: 100%; max-height: 520px; object-fit: contain; }
+.paper.portrait .annex-img img { max-height: 560px; }
+.annex .noimg { padding: 40px 20px; border: 1px dashed #777; color: #444; text-align: center; width: 100%; }
+.annex h3 { margin: 0 0 8px; font-size: 16px; }
+.annex dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+.annex dt { font-weight: 700; }
+.annex dd { margin: 0; }
+.annex .note { font-size: 13px; }
