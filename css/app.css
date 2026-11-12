@@ -151,3 +151,12 @@ legend { font-weight: 700; padding: 0 6px; }
 details.fix { margin: 12px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
 details.fix summary { font-weight: 600; cursor: pointer; }
 details.fix .expenses { margin: 8px 0 12px; }
+
+/* Tasas de venta BCH por fecha */
+ul.rates { list-style: none; padding: 0; margin: 12px 0; }
+.rate-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 8px 0; }
+.rate-row > div { display: flex; flex-direction: column; }
+.rate-row input { width: 9em; text-align: right; font: inherit; font-size: 1.05rem; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); }
+.rate-row input.warn { border: 2px solid #d98a00; }
