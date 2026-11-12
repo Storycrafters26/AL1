@@ -1,6 +1,6 @@
 import { db, getSetting, setSetting, uid, requestPersistence } from "./db.js";
 import { readReceipt, translateToEnglish, CATEGORIES } from "./claude.js";
-import { rateToUSD, rateUSDtoHNL, applyBCHRate, isBCHVenta, BCH_VENTA, BCH_URL, convert, round2 } from "./rates.js";
+import { rateToUSD, rateUSDtoHNL, lookupBCHVenta, applyBCHRate, isBCHVenta, BCH_VENTA, BCH_URL, convert, round2 } from "./rates.js";
 import { fillTemplate, extractLogo, rowDate } from "./xlsx.js";
 import { liquidationHTML, annexHTML, elementToPDF } from "./print.js";
 import { prepareImage, shareOrDownload, tripZip, tripFolderName, receiptFileName } from "./files.js";
@@ -223,8 +223,9 @@ async function tripView(id) {
     ${closed ? "" : `<a class="btn primary big" href="#/viaje/${id}/gasto">+ Registrar gasto</a>`}
     ${pending.length ? `<div class="notice">${pending.length} gasto(s) sin tasa de cambio.
       <button class="btn small" id="fixRates">Calcular tasas pendientes</button></div>` : ""}
-    ${unverified.length ? `<div class="notice">${unverified.length} fecha(s) sin la tasa de venta del BCH confirmada.
-      <a class="btn small" href="#/viaje/${id}/tasas">Poner tasas BCH</a></div>` : ""}
+    ${unverified.length ? `<div class="notice">${unverified.length} fecha(s) sin la tasa de venta del BCH de su día.
+      <button class="btn small" id="findBCH">Buscar tasas BCH</button>
+      <a class="btn small" href="#/viaje/${id}/tasas">Ver o escribir a mano</a></div>` : ""}
     <h2>Gastos (${expenses.length})</h2>
     <ol class="expenses">
       ${expenses.map((e, i) => `
@@ -263,6 +264,20 @@ async function tripView(id) {
       render();
     })
   );
+  $("#findBCH")?.addEventListener("click", (ev) =>
+    busy(ev.target, "Buscando…", async () => {
+      const { found, missing } = await findBCHRates(unverified);
+      toast(missing.length
+        ? `Tasas encontradas: ${found}. Sin encontrar: ${missing.map(rowDate).join(", ")}. Escríbelas a mano.`
+        : `Tasas de venta BCH aplicadas a ${found} fecha(s).`, missing.length ? "error" : undefined);
+      render();
+    })
+  );
+  // Las fechas sin venta BCH se buscan solas una vez al abrir el viaje (gastos registrados antes).
+  if (unverified.length && navigator.onLine && !autoSearched.has(id)) {
+    autoSearched.add(id);
+    $("#findBCH")?.click();
+  }
   $("#zip").addEventListener("click", (ev) => busy(ev.target, "Preparando…", () => exportTrip(trip, expenses)));
   $("#close").addEventListener("click", async () => {
     if (closed) {
@@ -435,20 +450,26 @@ async function expenseForm(tripId, expenseId, from = null) {
     const cur = field("currency").value.toUpperCase();
     if (!date || cur.length !== 3) return;
     if (cur === "HNL") return recalc();
-    status.textContent = "Buscando tasas del " + rowDate(date) + "…";
+    // Si la fecha o la moneda cambian mientras se busca (al leer el recibo), esta búsqueda ya no aplica.
+    const stale = () => field("date").value !== date || field("currency").value.toUpperCase() !== cur;
+    status.textContent = `Buscando la tasa de venta del BCH del ${rowDate(date)}…`;
     try {
       if (force || !dirty.rateToUSD) {
         const r = await rateToUSD(cur, date);
+        if (stale()) return;
         field("rateToUSD").value = r.rate;
         sources.usd = r.source;
       }
       if (force || !dirty.rateHNL) {
         const r = await rateUSDtoHNL(date);
+        if (stale()) return;
         field("rateHNL").value = r.rate;
         sources.hnl = r.source;
+        sources.hnlURL = r.url || "";
         field("bch").checked = !!r.bch;
       }
-      $("#rateSrc").textContent = `A USD: ${sources.usd} · A HNL: ${sources.hnl}`;
+      $("#rateSrc").innerHTML = `A USD: ${esc(sources.usd)} · A HNL: ${esc(sources.hnl)}` +
+        (sources.hnlURL ? ` · <a href="${esc(sources.hnlURL)}" target="_blank" rel="noopener">ver fuente</a>` : "");
       status.textContent = "";
     } catch (err) {
       status.textContent = err.message + " Puedes escribir las tasas a mano o calcularlas después.";
@@ -595,7 +616,7 @@ async function expenseForm(tripId, expenseId, from = null) {
       rateToUSD: rate1,
       rateToUSDSource: local ? "No aplica" : sources.usd,
       rateHNL: rate2,
-      rateHNLSource: local ? "No aplica" : fd.bch ? BCH_VENTA : sources.hnl,
+      rateHNLSource: local ? "No aplica" : fd.bch ? (isBCHVenta({ rateHNLSource: sources.hnl }) ? sources.hnl : BCH_VENTA) : sources.hnl,
       // Un gasto en lempiras va directo con su valor original.
       ...(local ? { usd: null, hnl: amount } : rate1 && rate2 ? convert(amount, rate1, rate2) : { usd: null, hnl: null }),
     };
@@ -608,7 +629,13 @@ async function expenseForm(tripId, expenseId, from = null) {
     const seq = others.filter((x) => x.date <= saved.date).length + 1;
     if (saved.blobId) saved.fileName = receiptFileName(saved, seq, saved.mime);
     await db.put("expenses", saved);
-    const sameDay = !local && fd.bch && rate2 && saved.rateToUSD ? (await applyBCHRate(fd.date, rate2)) - 1 : 0;
+    // La venta BCH de la fecha vale para todos los gastos de ese día.
+    let sameDay = 0;
+    if (!local && fd.bch && rate2 && saved.rateToUSD) {
+      const row = await db.get("rates", fd.date);
+      const found = row?.auto && Number(row.hnl) === rate2 ? row : null;
+      sameDay = (await applyBCHRate(fd.date, rate2, found)) - 1;
+    }
     toast(sameDay > 0 ? `Gasto registrado. Tasa de venta BCH aplicada también a ${sameDay} gasto(s) del mismo día.` : "Gasto registrado.");
     location.hash = back;
   });
@@ -759,6 +786,9 @@ async function annexView(id) {
 
 // ---------- tasas de venta BCH ----------
 
+// Viajes cuya búsqueda automática ya se intentó en esta sesión, para no repetirla en cada visita.
+const autoSearched = new Set();
+
 // Fechas con gastos en moneda extranjera cuya tasa a lempiras aún no es la venta BCH confirmada.
 function unverifiedDates(expenses) {
   return [...new Set(expenses.filter((e) => e.currency !== "HNL" && !isBCHVenta(e)).map((e) => e.date))].sort();
@@ -776,19 +806,26 @@ async function bchRatesView(id) {
     const ok = day.every(isBCHVenta);
     const saved = await db.get("rates", date);
     const current = saved?.kind === "venta" ? saved.hnl : day.find((e) => e.rateHNL)?.rateHNL || "";
+    const where = ok && saved?.url
+      ? ` · <a href="${esc(saved.url)}" target="_blank" rel="noopener">fuente</a>` : "";
     rows.push(`
       <li class="rate-row">
         <div><strong>${rowDate(date)}</strong>
-          <span class="muted small">${day.length} gasto(s) · ${ok ? "Venta BCH confirmada" : "Por verificar"}</span></div>
-        <input data-date="${date}" inputmode="decimal" value="${esc(current)}" class="${ok ? "" : "warn"}" aria-label="Tasa de venta BCH del ${rowDate(date)}">
+          <span class="muted small">${day.length} gasto(s) · ${ok ? "Venta BCH del día" : "Por verificar"}${where}</span></div>
+        <input data-date="${date}" data-ok="${ok ? 1 : ""}" data-initial="${esc(current)}" inputmode="decimal" value="${esc(current)}"
+          class="${ok ? "" : "warn"}" aria-label="Tasa de venta BCH del ${rowDate(date)}">
       </li>`);
   }
   app.innerHTML = `
     <div class="row-between"><h1>Tasas de venta BCH</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
-    <p class="muted">Escribe la tasa de <strong>venta</strong> del dólar del Banco Central de Honduras para cada fecha
+    <p class="muted">Cada gasto usa la tasa de <strong>venta</strong> del dólar del Banco Central de Honduras de su fecha.
+      La app la busca sola; aquí puedes buscar las que falten o corregir alguna a mano
       (consúltala en <a href="${BCH_URL}" target="_blank" rel="noopener">bch.hn</a>). Al guardar, todos los gastos
       en moneda extranjera de esa fecha se recalculan en lempiras.</p>
-    ${dates.length ? `<form id="f"><ul class="rates">${rows.join("")}</ul>
+    ${dates.length ? `<form id="f">
+      ${dates.some((d) => !expenses.filter((e) => e.date === d).every(isBCHVenta))
+        ? `<button class="btn" type="button" id="findBCH">Buscar las tasas que faltan</button>` : ""}
+      <ul class="rates">${rows.join("")}</ul>
       <div class="actions"><button class="btn primary big" type="submit">Guardar y recalcular</button></div></form>`
       : `<p class="muted">Este viaje no tiene gastos en moneda extranjera.</p>`}`;
 
@@ -797,11 +834,34 @@ async function bchRatesView(id) {
     let n = 0;
     for (const input of $$("input[data-date]")) {
       const v = Number(String(input.value).replace(/,/g, ""));
+      // Una tasa ya confirmada que no cambiaste se queda como está (con su fuente).
+      if (input.dataset.ok && input.value === input.dataset.initial) continue;
       if (v > 0) n += await applyBCHRate(input.dataset.date, v);
     }
     toast(`${n} gasto(s) recalculados con la tasa de venta BCH.`);
     location.hash = `#/viaje/${id}`;
   });
+  $("#findBCH")?.addEventListener("click", (ev) =>
+    busy(ev.target, "Buscando…", async () => {
+      const { missing } = await findBCHRates(unverifiedDates(expenses));
+      if (missing.length) toast(`No se encontró la tasa de: ${missing.map(rowDate).join(", ")}. Escríbela a mano.`, "error");
+      render();
+    })
+  );
+}
+
+// Busca con Claude la venta BCH de cada fecha y la aplica a los gastos de ese día.
+async function findBCHRates(dates) {
+  let found = 0;
+  const missing = [];
+  for (const date of dates) {
+    const row = await lookupBCHVenta(date);
+    if (row) {
+      await applyBCHRate(date, row.hnl, row);
+      found++;
+    } else missing.push(date);
+  }
+  return { found, missing };
 }
 
 // ---------- ajustes ----------
