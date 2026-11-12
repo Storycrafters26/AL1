@@ -1,8 +1,10 @@
 // Tasas de cambio por fecha. Flujo: moneda local -> USD -> HNL, con las tasas del día del gasto.
 //
-// La tasa USD -> HNL oficial es la del Banco Central de Honduras (BCH). La app propone la tasa
-// de mercado del día como punto de partida; cuando la corriges con la del BCH, queda guardada
-// para esa fecha y se reutiliza en todos los gastos de ese día.
+// La tasa USD -> HNL que pide Contabilidad es la de VENTA del Banco Central de Honduras (BCH).
+// El BCH no ofrece un servicio abierto que la app pueda leer, así que la escribes una vez por
+// fecha y queda guardada para todos los gastos de ese día. Mientras tanto la app propone la
+// última tasa de venta BCH que hayas guardado (o la de mercado si no hay ninguna), marcada
+// como "por verificar".
 
 import { db } from "./db.js";
 
@@ -48,18 +50,45 @@ export async function rateToUSD(currency, date) {
   return { rate: 1 / perUsd, source: `Mercado ${table.date}` };
 }
 
-// Tasa USD -> HNL: primero la del BCH que hayas guardado para esa fecha.
+export const BCH_VENTA = "BCH venta";
+export const BCH_URL = "https://www.bch.hn/";
+
+// ¿La tasa del gasto ya es la de venta del BCH confirmada?
+export const isBCHVenta = (e) => e.rateHNLSource === BCH_VENTA;
+
+// Tasa USD -> HNL: primero la de venta del BCH que hayas guardado para esa fecha.
 export async function rateUSDtoHNL(date) {
   const saved = await db.get("rates", date);
-  if (saved && saved.hnl) return { rate: saved.hnl, source: "BCH", bch: true };
+  if (saved && saved.hnl && saved.kind === "venta") return { rate: saved.hnl, source: BCH_VENTA, bch: true };
+  // Propuesta: la tasa de venta guardada más cercana (antes de esa fecha, si hay).
+  const ventas = (await db.all("rates")).filter((r) => r.kind === "venta" && r.hnl);
+  if (ventas.length) {
+    const before = ventas.filter((r) => r.date <= date).sort((a, b) => b.date.localeCompare(a.date));
+    const near = before[0] || ventas.sort((a, b) => a.date.localeCompare(b.date))[0];
+    return { rate: near.hnl, source: `BCH venta del ${near.date} (verificar la del día)`, bch: false };
+  }
   const table = await usdTable(date);
   const hnl = table.rates.hnl;
   if (!hnl) throw new Error("No hay tasa USD→HNL disponible.");
-  return { rate: hnl, source: `Mercado ${table.date} (verificar BCH)`, bch: false };
+  return { rate: hnl, source: `Mercado ${table.date} (no es la venta BCH: corrígela)`, bch: false };
 }
 
 export function saveBCHRate(date, hnl) {
-  return db.put("rates", { date, hnl: Number(hnl) });
+  return db.put("rates", { date, hnl: Number(hnl), kind: "venta" });
+}
+
+// Aplica la tasa de venta BCH de una fecha a todos los gastos en moneda extranjera de ese día.
+export async function applyBCHRate(date, hnl) {
+  await saveBCHRate(date, hnl);
+  const all = await db.all("expenses");
+  let n = 0;
+  for (const e of all) {
+    if (e.date !== date || e.currency === "HNL" || !e.rateToUSD) continue;
+    Object.assign(e, { rateHNL: Number(hnl), rateHNLSource: BCH_VENTA }, convert(e.amount, e.rateToUSD, Number(hnl)));
+    await db.put("expenses", e);
+    n++;
+  }
+  return n;
 }
 
 export function round2(n) {

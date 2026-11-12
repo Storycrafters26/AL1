@@ -7,7 +7,7 @@ App web para el iPhone que registra los gastos de un viaje y genera la liquidaci
 - **Viajes:** nombre, objetivo, fechas, presupuesto (Valor Transferencia), número de solicitud y de referencia.
 - **Captura:** foto del recibo, captura de pantalla (Uber, facturas digitales) o PDF. Claude lee país, ciudad, comercio, número de factura, fecha, monto, moneda, propina y concepto en español e inglés.
 - **Revisión:** todos los datos quedan editables antes de tocar **Registrar**, y después también.
-- **Conversión:** moneda local → USD → HNL con las tasas del día de cada gasto. La tasa USD→HNL se puede marcar como la oficial del BCH y se reutiliza para esa fecha.
+- **Conversión:** moneda local → USD → HNL con las tasas del día de cada gasto. La tasa USD→HNL es la de **venta del BCH**: se escribe una vez por fecha (en el gasto o en "Tasas de venta BCH" del viaje) y se aplica a todos los gastos de ese día. Los gastos en lempiras van directo, sin conversión.
 - **Liquidación:** llena una copia del formato original (.xlsx) sin cambiar su diseño, y genera un PDF en vertical u horizontal.
 - **Anexo de comprobantes:** cada imagen con su monto original, las tasas usadas y el monto en lempiras, en PDF.
 - **Carpeta del viaje:** un .zip con los comprobantes nombrados por fecha (`2026-11-12_001_Wendys.jpg`), la liquidación y el detalle en CSV, para guardar en Archivos o iCloud.

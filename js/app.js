@@ -1,6 +1,6 @@
 import { db, getSetting, setSetting, uid, requestPersistence } from "./db.js";
 import { readReceipt, translateToEnglish, CATEGORIES } from "./claude.js";
-import { rateToUSD, rateUSDtoHNL, saveBCHRate, convert, round2 } from "./rates.js";
+import { rateToUSD, rateUSDtoHNL, applyBCHRate, isBCHVenta, BCH_VENTA, BCH_URL, convert, round2 } from "./rates.js";
 import { fillTemplate, extractLogo, rowDate } from "./xlsx.js";
 import { liquidationHTML, annexHTML, elementToPDF } from "./print.js";
 import { prepareImage, shareOrDownload, tripZip, tripFolderName, receiptFileName } from "./files.js";
@@ -73,6 +73,7 @@ const routes = [
   [/^\/gasto\/([^/]+)\/desde\/(liquidacion|anexo)$/, (id, from) => expenseForm(null, id, from)],
   [/^\/viaje\/([^/]+)\/liquidacion$/, (id) => liquidationView(id)],
   [/^\/viaje\/([^/]+)\/anexo$/, (id) => annexView(id)],
+  [/^\/viaje\/([^/]+)\/tasas$/, (id) => bchRatesView(id)],
   [/^\/ajustes$/, settingsView],
 ];
 
@@ -204,6 +205,7 @@ async function tripView(id) {
   const { spent, budget, left, pct } = totals(trip, expenses);
   const pending = expenses.filter((e) => e.currency !== "HNL" && (!e.rateHNL || !e.rateToUSD));
   const closed = trip.status === "closed";
+  const unverified = unverifiedDates(expenses);
 
   app.innerHTML = `
     <div class="row-between">
@@ -221,6 +223,8 @@ async function tripView(id) {
     ${closed ? "" : `<a class="btn primary big" href="#/viaje/${id}/gasto">+ Registrar gasto</a>`}
     ${pending.length ? `<div class="notice">${pending.length} gasto(s) sin tasa de cambio.
       <button class="btn small" id="fixRates">Calcular tasas pendientes</button></div>` : ""}
+    ${unverified.length ? `<div class="notice">${unverified.length} fecha(s) sin la tasa de venta del BCH confirmada.
+      <a class="btn small" href="#/viaje/${id}/tasas">Poner tasas BCH</a></div>` : ""}
     <h2>Gastos (${expenses.length})</h2>
     <ol class="expenses">
       ${expenses.map((e, i) => `
@@ -234,6 +238,7 @@ async function tripView(id) {
     <h2>Documentos</h2>
     <div class="actions wrap">
       <a class="btn" href="#/viaje/${id}/liquidacion">Liquidación</a>
+      <a class="btn" href="#/viaje/${id}/tasas">Tasas de venta BCH</a>
       <a class="btn" href="#/viaje/${id}/anexo">Comprobantes (una hoja por factura)</a>
       <button class="btn" id="zip">Guardar carpeta del viaje</button>
       <button class="btn ${closed ? "" : "danger"}" id="close">${closed ? "Reabrir viaje" : "Cerrar viaje"}</button>
@@ -369,11 +374,12 @@ async function expenseForm(tripId, expenseId, from = null) {
           <label>Monto en USD<input name="usd" readonly value="${esc(e.usd)}"></label>
         </div>
         <div class="two">
-          <label data-fx>Tasa USD → HNL<input name="rateHNL" inputmode="decimal" value="${esc(e.rateHNL)}"></label>
+          <label data-fx>Tasa de venta BCH (USD → HNL)<input name="rateHNL" inputmode="decimal" value="${esc(e.rateHNL)}"></label>
           <label>Monto en lempiras<input name="hnl" readonly value="${esc(e.hnl)}" class="strong"></label>
         </div>
         <p class="muted small" id="rateSrc" data-fx>${esc(e.rateHNLSource || "")}</p>
-        <label class="check" data-fx><input type="checkbox" name="bch" ${e.rateHNLSource === "BCH" ? "checked" : ""}> Esta es la tasa oficial del BCH para esta fecha</label>
+        <label class="check" data-fx><input type="checkbox" name="bch" ${isBCHVenta(e) ? "checked" : ""}> Es la tasa de <strong>venta</strong> del BCH de esta fecha (se aplica a todos los gastos de ese día)</label>
+        <p class="muted small" data-fx>Consúltala en <a href="${BCH_URL}" target="_blank" rel="noopener">bch.hn</a>.</p>
         <button class="btn small" type="button" id="rates" data-fx>Actualizar tasas</button>
       </fieldset>
 
@@ -589,7 +595,7 @@ async function expenseForm(tripId, expenseId, from = null) {
       rateToUSD: rate1,
       rateToUSDSource: local ? "No aplica" : sources.usd,
       rateHNL: rate2,
-      rateHNLSource: local ? "No aplica" : fd.bch ? "BCH" : sources.hnl,
+      rateHNLSource: local ? "No aplica" : fd.bch ? BCH_VENTA : sources.hnl,
       // Un gasto en lempiras va directo con su valor original.
       ...(local ? { usd: null, hnl: amount } : rate1 && rate2 ? convert(amount, rate1, rate2) : { usd: null, hnl: null }),
     };
@@ -601,9 +607,9 @@ async function expenseForm(tripId, expenseId, from = null) {
     }
     const seq = others.filter((x) => x.date <= saved.date).length + 1;
     if (saved.blobId) saved.fileName = receiptFileName(saved, seq, saved.mime);
-    if (!local && fd.bch && rate2) await saveBCHRate(fd.date, rate2);
     await db.put("expenses", saved);
-    toast("Gasto registrado.");
+    const sameDay = !local && fd.bch && rate2 && saved.rateToUSD ? (await applyBCHRate(fd.date, rate2)) - 1 : 0;
+    toast(sameDay > 0 ? `Gasto registrado. Tasa de venta BCH aplicada también a ${sameDay} gasto(s) del mismo día.` : "Gasto registrado.");
     location.hash = back;
   });
 
@@ -665,6 +671,8 @@ async function liquidationView(id) {
 
   app.innerHTML = `
     <div class="row-between"><h1>Liquidación</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
+    ${unverifiedDates(expenses).length ? `<div class="notice">Hay gastos sin la tasa de venta del BCH confirmada.
+      <a class="btn small" href="#/viaje/${id}/tasas">Poner tasas BCH</a></div>` : ""}
     ${missing ? `<div class="notice">${missing} gasto(s) no tienen tasa de cambio y no aparecen. Calcúlalas desde el viaje.</div>` : ""}
     ${template ? "" : `<div class="notice">Para el Excel con el formato original, carga el archivo en <a href="#/ajustes">Ajustes</a>.</div>`}
     ${html}
@@ -747,6 +755,53 @@ async function annexView(id) {
       }
     })
   );
+}
+
+// ---------- tasas de venta BCH ----------
+
+// Fechas con gastos en moneda extranjera cuya tasa a lempiras aún no es la venta BCH confirmada.
+function unverifiedDates(expenses) {
+  return [...new Set(expenses.filter((e) => e.currency !== "HNL" && !isBCHVenta(e)).map((e) => e.date))].sort();
+}
+
+// Una tasa de venta BCH por fecha; al guardarla se recalculan todos los gastos de ese día.
+async function bchRatesView(id) {
+  const trip = await db.get("trips", id);
+  if (!trip) return (location.hash = "#/");
+  const expenses = (await tripExpenses(id)).filter((e) => e.currency !== "HNL");
+  const dates = [...new Set(expenses.map((e) => e.date))].sort();
+  const rows = [];
+  for (const date of dates) {
+    const day = expenses.filter((e) => e.date === date);
+    const ok = day.every(isBCHVenta);
+    const saved = await db.get("rates", date);
+    const current = saved?.kind === "venta" ? saved.hnl : day.find((e) => e.rateHNL)?.rateHNL || "";
+    rows.push(`
+      <li class="rate-row">
+        <div><strong>${rowDate(date)}</strong>
+          <span class="muted small">${day.length} gasto(s) · ${ok ? "Venta BCH confirmada" : "Por verificar"}</span></div>
+        <input data-date="${date}" inputmode="decimal" value="${esc(current)}" class="${ok ? "" : "warn"}" aria-label="Tasa de venta BCH del ${rowDate(date)}">
+      </li>`);
+  }
+  app.innerHTML = `
+    <div class="row-between"><h1>Tasas de venta BCH</h1><a class="btn small" href="#/viaje/${id}">Volver</a></div>
+    <p class="muted">Escribe la tasa de <strong>venta</strong> del dólar del Banco Central de Honduras para cada fecha
+      (consúltala en <a href="${BCH_URL}" target="_blank" rel="noopener">bch.hn</a>). Al guardar, todos los gastos
+      en moneda extranjera de esa fecha se recalculan en lempiras.</p>
+    ${dates.length ? `<form id="f"><ul class="rates">${rows.join("")}</ul>
+      <div class="actions"><button class="btn primary big" type="submit">Guardar y recalcular</button></div></form>`
+      : `<p class="muted">Este viaje no tiene gastos en moneda extranjera.</p>`}`;
+
+  $("#f")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    let n = 0;
+    for (const input of $$("input[data-date]")) {
+      const v = Number(String(input.value).replace(/,/g, ""));
+      if (v > 0) n += await applyBCHRate(input.dataset.date, v);
+    }
+    toast(`${n} gasto(s) recalculados con la tasa de venta BCH.`);
+    location.hash = `#/viaje/${id}`;
+  });
 }
 
 // ---------- ajustes ----------
