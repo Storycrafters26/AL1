@@ -1,12 +1,14 @@
 // Tasas de cambio por fecha. Flujo: moneda local -> USD -> HNL, con las tasas del día del gasto.
 //
-// La tasa USD -> HNL que pide Contabilidad es la de VENTA del Banco Central de Honduras (BCH).
-// El BCH no ofrece un servicio abierto que la app pueda leer, así que la escribes una vez por
-// fecha y queda guardada para todos los gastos de ese día. Mientras tanto la app propone la
-// última tasa de venta BCH que hayas guardado (o la de mercado si no hay ninguna), marcada
-// como "por verificar".
+// La tasa USD -> HNL que pide Contabilidad es la de VENTA del Banco Central de Honduras (BCH)
+// de la fecha de cada factura. El BCH no ofrece un servicio abierto que la app pueda leer, así
+// que Claude la busca en internet (sitio del BCH o diarios que publican su tasa oficial) la
+// primera vez que se necesita una fecha, y queda guardada para todos los gastos de ese día.
+// Si no la encuentra (sin señal, por ejemplo), la app propone la última tasa de venta guardada
+// marcada "por verificar", y siempre se puede escribir a mano.
 
 import { db } from "./db.js";
+import { findBCHVentaRate } from "./claude.js";
 
 const SOURCES = [
   (date) => `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${date}/v1/currencies/usd.min.json`,
@@ -53,13 +55,37 @@ export async function rateToUSD(currency, date) {
 export const BCH_VENTA = "BCH venta";
 export const BCH_URL = "https://www.bch.hn/";
 
-// ¿La tasa del gasto ya es la de venta del BCH confirmada?
-export const isBCHVenta = (e) => e.rateHNLSource === BCH_VENTA;
+// ¿La tasa del gasto ya es la venta del BCH de su fecha (escrita a mano o encontrada por Claude)?
+export const isBCHVenta = (e) => (e.rateHNLSource || "").startsWith(BCH_VENTA) && !e.rateHNLSource.includes("verificar");
 
-// Tasa USD -> HNL: primero la de venta del BCH que hayas guardado para esa fecha.
+const host = (url) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; } };
+const savedSource = (r) => (r.url ? `${BCH_VENTA} (${host(r.url)})` : BCH_VENTA);
+
+// Busca la venta BCH de la fecha con Claude y la guarda. Devuelve null si no la encuentra.
+export async function lookupBCHVenta(date) {
+  try {
+    const r = await findBCHVentaRate(date);
+    // Para hoy o ayer, una tasa publicada antes de la fecha puede ser solo que aún no salió la del día:
+    // no se guarda, y se vuelve a buscar más tarde.
+    const recent = (Date.now() - new Date(date + "T12:00:00").getTime()) / 86400000 < 1.5;
+    if (recent && r.publishedDate && r.publishedDate < date && ![0, 6].includes(new Date(date + "T12:00:00").getDay())) return null;
+    const row = { date, hnl: r.venta, kind: "venta", url: r.url, publishedDate: r.publishedDate, auto: true };
+    await db.put("rates", row);
+    return row;
+  } catch (e) {
+    console.warn("Tasa BCH no encontrada", date, e);
+    return null;
+  }
+}
+
+// Tasa USD -> HNL de la fecha: la venta BCH guardada, si no la busca Claude, y si no una propuesta.
 export async function rateUSDtoHNL(date) {
   const saved = await db.get("rates", date);
-  if (saved && saved.hnl && saved.kind === "venta") return { rate: saved.hnl, source: BCH_VENTA, bch: true };
+  if (saved && saved.hnl && saved.kind === "venta") return { rate: saved.hnl, source: savedSource(saved), bch: true, url: saved.url };
+  if (navigator.onLine) {
+    const found = await lookupBCHVenta(date);
+    if (found) return { rate: found.hnl, source: savedSource(found), bch: true, url: found.url };
+  }
   // Propuesta: la tasa de venta guardada más cercana (antes de esa fecha, si hay).
   const ventas = (await db.all("rates")).filter((r) => r.kind === "venta" && r.hnl);
   if (ventas.length) {
@@ -78,13 +104,15 @@ export function saveBCHRate(date, hnl) {
 }
 
 // Aplica la tasa de venta BCH de una fecha a todos los gastos en moneda extranjera de ese día.
-export async function applyBCHRate(date, hnl) {
-  await saveBCHRate(date, hnl);
+// Sin `row` es una tasa escrita a mano; con `row` es la que encontró Claude.
+export async function applyBCHRate(date, hnl, row = null) {
+  if (!row) await saveBCHRate(date, hnl);
+  const source = row ? savedSource(row) : BCH_VENTA;
   const all = await db.all("expenses");
   let n = 0;
   for (const e of all) {
     if (e.date !== date || e.currency === "HNL" || !e.rateToUSD) continue;
-    Object.assign(e, { rateHNL: Number(hnl), rateHNLSource: BCH_VENTA }, convert(e.amount, e.rateToUSD, Number(hnl)));
+    Object.assign(e, { rateHNL: Number(hnl), rateHNLSource: source }, convert(e.amount, e.rateToUSD, Number(hnl)));
     await db.put("expenses", e);
     n++;
   }
